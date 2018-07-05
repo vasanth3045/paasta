@@ -3,6 +3,7 @@ from typing import Sequence
 
 import mock
 import pytest
+from kubernetes.client import V1AWSElasticBlockStoreVolumeSource
 from kubernetes.client import V1Container
 from kubernetes.client import V1ContainerPort
 from kubernetes.client import V1Deployment
@@ -21,6 +22,7 @@ from kubernetes.client import V1PodTemplateSpec
 from kubernetes.client import V1Probe
 from kubernetes.client import V1RollingUpdateDeployment
 from kubernetes.client import V1Volume
+from kubernetes.client import V1VolumeDevice
 from kubernetes.client import V1VolumeMount
 
 from paasta_tools.kubernetes_tools import create_deployment
@@ -37,6 +39,7 @@ from paasta_tools.kubernetes_tools import load_kubernetes_service_config
 from paasta_tools.kubernetes_tools import load_kubernetes_service_config_no_cache
 from paasta_tools.kubernetes_tools import read_all_registrations_for_service_instance
 from paasta_tools.kubernetes_tools import update_deployment
+from paasta_tools.utils import AwsEbsVolume
 from paasta_tools.utils import DockerVolume
 from paasta_tools.utils import InvalidJobNameError
 from paasta_tools.utils import NoConfigurationForServiceError
@@ -291,11 +294,14 @@ class TestKubernetesDeploymentConfig(unittest.TestCase):
         ), mock.patch(
             'paasta_tools.kubernetes_tools.KubernetesDeploymentConfig.get_volume_mounts', autospec=True,
         ) as mock_get_volume_mounts, mock.patch(
+            'paasta_tools.kubernetes_tools.KubernetesDeploymentConfig.get_volume_devices', autospec=True,
+        ) as mock_get_volume_devices, mock.patch(
             'paasta_tools.kubernetes_tools.KubernetesDeploymentConfig.get_sidecar_containers', autospec=True,
             return_value=['mock_sidecar'],
         ):
             mock_system_config = mock.Mock()
-            mock_volumes: Sequence[DockerVolume] = []
+            mock_docker_volumes: Sequence[DockerVolume] = []
+            mock_aws_ebs_volumes: Sequence[AwsEbsVolume] = []
             expected = [
                 V1Container(
                     args=mock_get_args.return_value,
@@ -326,18 +332,27 @@ class TestKubernetesDeploymentConfig(unittest.TestCase):
                     name='kurupt-fm',
                     ports=[V1ContainerPort(container_port=8888)],
                     volume_mounts=mock_get_volume_mounts.return_value,
+                    volume_devices=mock_get_volume_devices.return_value,
                 ), 'mock_sidecar',
             ]
-            assert self.deployment.get_kubernetes_containers(mock_volumes, mock_system_config) == expected
+            assert self.deployment.get_kubernetes_containers(
+                docker_volumes=mock_docker_volumes,
+                system_paasta_config=mock_system_config,
+                aws_ebs_volumes=mock_aws_ebs_volumes,
+            ) == expected
 
     def test_get_pod_volumes(self):
         with mock.patch(
             'paasta_tools.kubernetes_tools.KubernetesDeploymentConfig.get_sanitised_volume_name', autospec=True,
             return_value='some-volume',
         ):
-            mock_volumes = [
+            mock_docker_volumes = [
                 {'hostPath': '/nail/blah', 'containerPath': '/nail/foo'},
                 {'hostPath': '/nail/thing', 'containerPath': '/nail/bar'},
+            ]
+            mock_aws_ebs_volumes = [
+                {'volume_id': 'vol-XXXXXXXXXXXXXXXXX', 'device_path': '/nail/baz'},
+                {'volume_id': 'vol-ZZZZZZZZZZZZZZZZZ', 'fs_type': 'ext4', 'container_path': '/nail/qux'},
             ]
             expected_volumes = [
                 V1Volume(
@@ -352,17 +367,39 @@ class TestKubernetesDeploymentConfig(unittest.TestCase):
                     ),
                     name='some-volume',
                 ),
+                V1Volume(
+                    aws_elastic_block_store=V1AWSElasticBlockStoreVolumeSource(
+                        volume_id='vol-XXXXXXXXXXXXXXXXX',
+                        read_only=True,
+                    ),
+                    name='some-volume',
+                ),
+                V1Volume(
+                    aws_elastic_block_store=V1AWSElasticBlockStoreVolumeSource(
+                        volume_id='vol-ZZZZZZZZZZZZZZZZZ',
+                        fs_type='ext4',
+                        read_only=True,
+                    ),
+                    name='some-volume',
+                ),
             ]
-            assert self.deployment.get_pod_volumes(mock_volumes) == expected_volumes
+            assert self.deployment.get_pod_volumes(
+                docker_volumes=mock_docker_volumes,
+                aws_ebs_volumes=mock_aws_ebs_volumes,
+            ) == expected_volumes
 
     def test_get_volume_mounts(self):
         with mock.patch(
             'paasta_tools.kubernetes_tools.KubernetesDeploymentConfig.get_sanitised_volume_name', autospec=True,
             return_value='some-volume',
         ):
-            mock_volumes = [
+            mock_docker_volumes = [
                 {'hostPath': '/nail/blah', 'containerPath': '/nail/foo'},
                 {'hostPath': '/nail/thing', 'containerPath': '/nail/bar', 'mode': 'RW'},
+            ]
+            mock_aws_ebs_volumes = [
+                {'volume_id': 'vol-XXXXXXXXXXXXXXXXX', 'device_path': '/nail/baz'},
+                {'volume_id': 'vol-ZZZZZZZZZZZZZZZZZ', 'fs_type': 'ext4', 'container_path': '/nail/qux'},
             ]
             expected_volumes = [
                 V1VolumeMount(
@@ -375,8 +412,35 @@ class TestKubernetesDeploymentConfig(unittest.TestCase):
                     name='some-volume',
                     read_only=False,
                 ),
+                V1VolumeMount(
+                    mount_path='/nail/qux',
+                    name='some-volume',
+                    read_only=True,
+                ),
             ]
-            assert self.deployment.get_volume_mounts(mock_volumes) == expected_volumes
+            assert self.deployment.get_volume_mounts(
+                docker_volumes=mock_docker_volumes,
+                aws_ebs_volumes=mock_aws_ebs_volumes,
+            ) == expected_volumes
+
+    def test_get_volume_devices(self):
+        with mock.patch(
+            'paasta_tools.kubernetes_tools.KubernetesDeploymentConfig.get_sanitised_volume_name', autospec=True,
+            return_value='some-volume',
+        ):
+            mock_aws_ebs_volumes = [
+                {'volume_id': 'vol-XXXXXXXXXXXXXXXXX', 'device_path': '/nail/baz'},
+                {'volume_id': 'vol-ZZZZZZZZZZZZZZZZZ', 'fs_type': 'ext4', 'container_path': '/nail/qux'},
+            ]
+            expected_devices = [
+                V1VolumeDevice(
+                    device_path='/nail/baz',
+                    name='some-volume',
+                ),
+            ]
+            assert self.deployment.get_volume_devices(
+                aws_ebs_volumes=mock_aws_ebs_volumes,
+            ) == expected_devices
 
     def test_get_sanitised_service_name(self):
         with mock.patch(

@@ -173,6 +173,18 @@ DockerVolume = TypedDict(
     },
 )
 
+AwsEbsVolume = TypedDict(
+    'AwsEbsVolume',
+    {
+        'volume_id': str,
+        'fs_type': str,
+        'partition': int,
+        'mode': str,
+        'container_path': str,
+        'device_path': str,
+    },
+)
+
 InstanceConfigDict = TypedDict(
     'InstanceConfigDict',
     {
@@ -194,6 +206,7 @@ InstanceConfigDict = TypedDict(
         'pool': str,
         'role': str,
         'extra_volumes': List[DockerVolume],
+        'aws_ebs_volumes': List[AwsEbsVolume],
         'security': SecurityConfigDict,
         'dependencies_reference': str,
         'dependencies': Dict[str, Dict],
@@ -653,6 +666,9 @@ class InstanceConfig(object):
         conform to the `Mesos container volumes spec
         <https://mesosphere.github.io/marathon/docs/native-docker.html>`_"""
         return self.config_dict.get('extra_volumes', [])
+
+    def get_aws_ebs_volumes(self) -> List[AwsEbsVolume]:
+        return self.config_dict.get('aws_ebs_volumes', [])
 
     def get_role(self) -> Optional[str]:
         """Which mesos role of nodes this job should run on.
